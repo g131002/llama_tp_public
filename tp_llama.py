@@ -11,7 +11,7 @@ def train_test():
     rank = dist.get_rank()
     device = f"cuda:{rank}"
 
-    hf_token = os..environ['HF_TOKEN']
+    hf_token = os.environ['HF_TOKEN']
     tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-2-7b-chat-hf', token=hf_token)
 
     test_input = 'test llama forward backward'
