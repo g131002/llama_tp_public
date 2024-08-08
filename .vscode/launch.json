@@ -1,0 +1,22 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: tp_llama",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/usr/local/bin/torchrun",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--nnodes=1",
+                "--nproc_per_node=2",
+                "--rdzv-endpoint=0.0.0.0:5000",
+                "/mnt/chatbot30TB/nell/deepspeed_study/llama_tp/tp_llama.py"
+            ]
+        }
+    ]
+}
