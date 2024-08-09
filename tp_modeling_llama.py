@@ -48,7 +48,7 @@ class AllReduce(Function):
     @staticmethod
     def backward(ctx, grad_output):
         dist.all_reduce(grad_output, op=dist.ReduceOp.SUM)
-        return grad_output
+        return grad_output / dist.get_world_size()
     
 all_reduce = AllReduce.apply
 
