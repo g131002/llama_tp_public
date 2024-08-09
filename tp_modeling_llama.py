@@ -219,10 +219,9 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
 
 
 class LlamaMLP(nn.Module):
-    def __init__(self, config, state_dict):
+    def __init__(self, config):
         super().__init__()
         tp = dist.get_world_size()
-        rank = dist.get_rank()
 
         assert config.intermediate_size % tp == 0
 
@@ -233,9 +232,6 @@ class LlamaMLP(nn.Module):
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=config.mlp_bias)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=config.mlp_bias)
 
-        self.gate_proj.weight.data = state_dict['model.layers.0.mlp.gate_proj.weight'].split(self.intermediate_size, dim=0)[rank]
-        self.up_proj.weight.data = state_dict['model.layers.0.mlp.up_proj.weight'].split(self.intermediate_size, dim=0)[rank]
-        self.down_proj.weight.data = state_dict['model.layers.0.mlp.down_proj.weight'].split(self.intermediate_size, dim=1)[rank]
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
@@ -278,7 +274,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 class LlamaAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: LlamaConfig, layer_idx: Optional[int] = None, state_dict = None):
+    def __init__(self, config: LlamaConfig, layer_idx: Optional[int] = None):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -290,7 +286,6 @@ class LlamaAttention(nn.Module):
             )
 
         tp = dist.get_world_size()
-        rank = dist.get_rank()
 
         assert config.num_attention_heads % tp == 0
         assert config.num_key_value_heads % tp == 0
@@ -316,11 +311,6 @@ class LlamaAttention(nn.Module):
         self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
         self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
         self.o_proj = nn.Linear(self.hidden_size // tp, self.hidden_size, bias=config.attention_bias)
-
-        self.q_proj.weight.data = state_dict['model.layers.0.self_attn.q_proj.weight'].split(self.num_heads * self.head_dim, dim=0)[rank]
-        self.k_proj.weight.data = state_dict['model.layers.0.self_attn.k_proj.weight'].split(self.num_key_value_heads * self.head_dim, dim=0)[rank]
-        self.v_proj.weight.data = state_dict['model.layers.0.self_attn.v_proj.weight'].split(self.num_key_value_heads * self.head_dim, dim=0)[rank]
-        self.o_proj.weight.data = state_dict['model.layers.0.self_attn.o_proj.weight'].split(self.hidden_size // tp, dim=1)[rank]
 
         # TODO (joao): remove in v4.45 (RoPE is computed in the model, not in the decoder layers)
         self.rotary_emb = LlamaRotaryEmbedding(config=self.config)
@@ -647,17 +637,15 @@ LLAMA_ATTENTION_CLASSES = {
 
 
 class LlamaDecoderLayer(nn.Module):
-    def __init__(self, config: LlamaConfig, layer_idx: int, state_dict):
+    def __init__(self, config: LlamaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.self_attn = LLAMA_ATTENTION_CLASSES[config._attn_implementation](config=config, layer_idx=layer_idx, state_dict=state_dict)
+        self.self_attn = LLAMA_ATTENTION_CLASSES[config._attn_implementation](config=config, layer_idx=layer_idx)
 
-        self.mlp = LlamaMLP(config, state_dict)
+        self.mlp = LlamaMLP(config)
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.input_layernorm.weight.data = state_dict['model.layers.0.input_layernorm.weight']
         self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm.weight.data = state_dict['model.layers.0.post_attention_layernorm.weight']
 
     def forward(
         self,
@@ -859,23 +847,21 @@ class LlamaModel(LlamaPreTrainedModel):
         config: LlamaConfig
     """
 
-    def __init__(self, config: LlamaConfig, state_dict):
+    def __init__(self, config: LlamaConfig):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        self.embed_tokens.weight.data = state_dict['model.embed_tokens.weight']
         self.layers = nn.ModuleList(
-            [LlamaDecoderLayer(config, layer_idx, state_dict) for layer_idx in range(config.num_hidden_layers)]
+            [LlamaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.norm.weight.data = state_dict['model.norm.weight']
         self.rotary_emb = LlamaRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
 
         # Initialize weights and apply final processing
-        # self.post_init()
+        self.post_init()
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -1091,13 +1077,27 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
 
     def __init__(self, config, state_dict):
         super().__init__(config)
-        self.model = LlamaModel(config, state_dict)
+        self.model = LlamaModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        self.lm_head.weight.data = state_dict['lm_head.weight']
-
+    
         # Initialize weights and apply final processing
-        # self.post_init()
+        self.post_init()
+
+        tp = dist.get_world_size()
+        rank = dist.get_rank()
+        self.model.embed_tokens.weight.data = state_dict['model.embed_tokens.weight']
+        self.model.layers[0].self_attn.q_proj.weight.data = state_dict['model.layers.0.self_attn.q_proj.weight'].split(self.model.layers[0].self_attn.num_heads * self.model.layers[0].self_attn.head_dim, dim=0)[rank]
+        self.model.layers[0].self_attn.k_proj.weight.data = state_dict['model.layers.0.self_attn.k_proj.weight'].split(self.model.layers[0].self_attn.num_key_value_heads * self.model.layers[0].self_attn.head_dim, dim=0)[rank]
+        self.model.layers[0].self_attn.v_proj.weight.data = state_dict['model.layers.0.self_attn.v_proj.weight'].split(self.model.layers[0].self_attn.num_key_value_heads * self.model.layers[0].self_attn.head_dim, dim=0)[rank]
+        self.model.layers[0].self_attn.o_proj.weight.data = state_dict['model.layers.0.self_attn.o_proj.weight'].split(self.model.layers[0].self_attn.hidden_size // tp, dim=1)[rank]
+        self.model.layers[0].mlp.gate_proj.weight.data = state_dict['model.layers.0.mlp.gate_proj.weight'].split(self.model.layers[0].mlp.intermediate_size, dim=0)[rank]
+        self.model.layers[0].mlp.up_proj.weight.data = state_dict['model.layers.0.mlp.up_proj.weight'].split(self.model.layers[0].mlp.intermediate_size, dim=0)[rank]
+        self.model.layers[0].mlp.down_proj.weight.data = state_dict['model.layers.0.mlp.down_proj.weight'].split(self.model.layers[0].mlp.intermediate_size, dim=1)[rank]
+        self.model.layers[0].input_layernorm.weight.data = state_dict['model.layers.0.input_layernorm.weight']
+        self.model.layers[0].post_attention_layernorm.weight.data = state_dict['model.layers.0.post_attention_layernorm.weight']
+        self.model.norm.weight.data = state_dict['model.norm.weight']
+        self.lm_head.weight.data = state_dict['lm_head.weight']
 
     def get_input_embeddings(self):
         return self.model.embed_tokens
