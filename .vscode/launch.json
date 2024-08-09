@@ -15,7 +15,7 @@
                 "--nnodes=1",
                 "--nproc_per_node=2",
                 "--rdzv-endpoint=0.0.0.0:5000",
-                "/mnt/chatbot30TB/nell/deepspeed_study/llama_tp/tp_llama.py"
+                "/mnt/chatbot30TB/nell/deepspeed_study/llama_tp_public/tp_llama.py"
             ]
         }
     ]
